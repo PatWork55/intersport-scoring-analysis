@@ -4,7 +4,7 @@
 ![Scikit-Learn](https://img.shields.io/badge/Machine%20Learning-Scikit--Learn-orange)
 ![Status](https://img.shields.io/badge/Status-Completed-green)
 
-> 📄 **[Consulter le Rapport d'Analyse Complet (PDF)](./Nom_De_Ton_Rapport.pdf)**
+> 📄 **[Consulter le Rapport d'Analyse Complet (PDF)](./RAPPORT.pdf)**
 
 ## 📌 Contexte du Projet
 Dans le cadre du lancement d'une nouvelle carte de fidélité, ce projet vise à analyser une base de données clients pour rationaliser la stratégie marketing. L'objectif est double : **identifier les profils types** de la clientèle et **développer un algorithme de scoring** capable de prédire la probabilité d'adhésion d'un client.
