@@ -5,6 +5,8 @@
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-green.svg)]()
 
 > Projet d'analyse de données pour la prédiction d'adhésion à une carte de fidélité et la segmentation de clientèle d'un magasin de sport.
+> 📄 **[Consulter le Rapport d'Analyse Complet (PDF)](./RAPPORT_COMPLET.pdf)**
+
 
 ## 📌 Aperçu du Projet
 
@@ -219,9 +221,9 @@ Le modèle peut calculer un score de propension pour tout nouveau client ayant r
 ## 🤝 Auteur
 
 **AFFOUDJI Akomédi Paterne**
-- 📧 Email: [votre-email]
-- 💼 LinkedIn: [votre-linkedin]
-- 🌐 Portfolio: [votre-site]
+- 📧 Email: akomedi.affoudji@gmail.com
+- 💼 LinkedIn: linkedin.com/in/akomedi-paterne-affoudji
+- 🌐 Portfolio: 
 
 ## 📝 Licence
 
