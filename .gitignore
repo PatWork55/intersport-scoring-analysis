@@ -1,3 +1,39 @@
-# Ignore all Excel and Word files
-*.xls
-*.doc
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.lock
+.~lock.*
+
+# Fichiers temporaires
+*.tmp
+*.bak
+*.log
+
+# Note: On garde les fichiers de données pour la démo
+# Si vous voulez les exclure, décommentez:
+# *.xls
+# *.doc
