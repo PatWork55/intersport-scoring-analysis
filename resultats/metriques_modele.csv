@@ -1,0 +1,11 @@
+Methode,Metrique,Moyenne,Ecart_type
+Test indépendant,accuracy,0.7647058823529411,
+Cross-validation 5-fold sur le train,accuracy,0.7637096774193549,0.07673377561738688
+Test indépendant,roc_auc,0.865916955017301,
+Cross-validation 5-fold sur le train,roc_auc,0.813125,0.07297293216066492
+Test indépendant,precision,0.75,
+Cross-validation 5-fold sur le train,precision,0.7665747702589808,0.11075061146648349
+Test indépendant,recall,0.7941176470588235,
+Cross-validation 5-fold sur le train,recall,0.7675,0.12008099118696701
+Test indépendant,f1,0.7714285714285715,
+Cross-validation 5-fold sur le train,f1,0.7594244970715558,0.08083660240813277

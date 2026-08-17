@@ -1,273 +1,201 @@
-"""
-Module de modélisation prédictive (Scoring)
-"""
+"""Pipeline supervisé de scoring par régression logistique."""
 
-import pandas as pd
+from collections.abc import Sequence
+import warnings
+
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    classification_report, confusion_matrix, accuracy_score,
-    roc_auc_score, roc_curve, precision_recall_curve
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
 )
-import statsmodels.api as sm
-from typing import Tuple, Dict
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+from src.feature_selection import CramersVSelector
 
 
 class ScoringModel:
-    """Classe pour le modèle de scoring (prédiction d'appétence)"""
+    """Entraîne et évalue un score d'intérêt sans utiliser le test au fit."""
 
-    def __init__(self, df: pd.DataFrame, features: list, target: str = 'Q10'):
-        """
-        Initialise le modèle de scoring
-
-        Args:
-            df: DataFrame contenant les données
-            features: Liste des features à utiliser
-            target: Nom de la variable cible
-        """
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        candidate_features: Sequence[str],
+        target: str = "Q10",
+        positive_code: int = 1,
+        random_state: int = 42,
+    ) -> None:
         self.df = df.copy()
-        self.features = features
+        self.candidate_features = list(candidate_features)
         self.target = target
-        self.model = None
-        self.statsmodels_result = None
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        self.feature_names = None
+        self.positive_code = positive_code
+        self.random_state = random_state
+        self.pipeline: Pipeline | None = None
+        self.X_train: pd.DataFrame | None = None
+        self.X_test: pd.DataFrame | None = None
+        self.y_train: pd.Series | None = None
+        self.y_test: pd.Series | None = None
 
-    def prepare_data(self, test_size: float = 0.3, encode_dummies: bool = True) -> Tuple:
-        """
-        Prépare les données pour la modélisation
+    def prepare_data(self, test_size: float = 0.30):
+        """Réalise le split stratifié avant toute sélection ou transformation."""
+        missing = set(self.candidate_features).union({self.target}).difference(self.df.columns)
+        if missing:
+            raise ValueError(f"Colonnes absentes pour le scoring : {sorted(missing)}")
 
-        Args:
-            test_size: Proportion de données pour le test
-            encode_dummies: Si True, applique un encodage one-hot
-
-        Returns:
-            Tuple (X_train, X_test, y_train, y_test)
-        """
-        # Préparation de X et y
-        X = self.df[self.features].copy()
-
-        # Encodage de la cible: 1 (Oui) -> 1, 2 (Non) -> 0
-        y = self.df[self.target].apply(lambda x: 1 if x == 1 else 0)
-
-        # Encodage one-hot des variables catégorielles si demandé
-        if encode_dummies:
-            X = pd.get_dummies(X, columns=self.features, drop_first=True)
-            self.feature_names = list(X.columns)
-        else:
-            self.feature_names = self.features
-
-        # Division train/test
+        X = self.df[self.candidate_features].copy()
+        y = self.df[self.target].eq(self.positive_code).astype(int)
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42, stratify=y
+            X,
+            y,
+            test_size=test_size,
+            random_state=self.random_state,
+            stratify=y,
         )
-
-        print(f"\n✓ Données préparées:")
-        print(f"   • Train: {len(self.X_train)} observations")
-        print(f"   • Test: {len(self.X_test)} observations")
-        print(f"   • Features: {len(self.feature_names)} variables")
-        print(f"   • Distribution cible (train): {self.y_train.value_counts().to_dict()}")
-
         return self.X_train, self.X_test, self.y_train, self.y_test
 
-    def fit_sklearn_model(self, max_iter: int = 1000) -> LogisticRegression:
-        """
-        Entraîne un modèle de régression logistique avec scikit-learn
-
-        Args:
-            max_iter: Nombre maximum d'itérations
-
-        Returns:
-            Modèle entraîné
-        """
+    def fit(
+        self,
+        top_n: int = 7,
+        cramer_threshold: float = 0.15,
+        max_iter: int = 2_000,
+    ) -> Pipeline:
+        """Ajuste sélection, one-hot encoding et modèle sur le train uniquement."""
         if self.X_train is None:
             self.prepare_data()
 
-        self.model = LogisticRegression(max_iter=max_iter, random_state=42)
-        self.model.fit(self.X_train, self.y_train)
+        self.pipeline = self._build_pipeline(top_n, cramer_threshold, max_iter)
+        self.pipeline.fit(self.X_train, self.y_train)
+        return self.pipeline
 
-        print("\n✓ Modèle scikit-learn entraîné avec succès")
+    def _build_pipeline(self, top_n: int, threshold: float, max_iter: int) -> Pipeline:
+        return Pipeline(
+            steps=[
+                ("selection", CramersVSelector(top_n=top_n, threshold=threshold)),
+                (
+                    "encodage",
+                    OneHotEncoder(
+                        drop="first",
+                        handle_unknown="ignore",
+                        sparse_output=False,
+                    ),
+                ),
+                (
+                    "modele",
+                    LogisticRegression(
+                        max_iter=max_iter,
+                        random_state=self.random_state,
+                    ),
+                ),
+            ]
+        )
 
-        return self.model
+    def evaluate(self, cv_folds: int = 5) -> dict:
+        """Évalue une fois le test et réalise la cross-validation sur le train.
 
-    def fit_statsmodels(self) -> sm.Logit:
+        Le pipeline complet est réajusté dans chaque fold : la sélection par V de
+        Cramer et l'encodage ne voient donc jamais le fold de validation.
         """
-        Entraîne un modèle avec statsmodels pour obtenir des statistiques détaillées
+        if self.pipeline is None or self.X_test is None:
+            raise ValueError("Appelez prepare_data() puis fit() avant evaluate().")
 
-        Returns:
-            Résultats du modèle statsmodels
-        """
-        # Préparation sans encoding one-hot (pour statsmodels)
-        X = self.df[self.features].copy()
-        y = self.df[self.target].apply(lambda x: 1 if x == 1 else 0)
-
-        # Ajout de la constante
-        X = sm.add_constant(X)
-
-        # Entraînement
-        logit_model = sm.Logit(y, X)
-        self.statsmodels_result = logit_model.fit(disp=False)
-
-        print("\n✓ Modèle statsmodels entraîné avec succès")
-
-        return self.statsmodels_result
-
-    def evaluate_model(self) -> Dict:
-        """
-        Évalue le modèle sur l'ensemble de test
-
-        Returns:
-            Dictionnaire contenant les métriques de performance
-        """
-        if self.model is None:
-            raise ValueError("Le modèle doit d'abord être entraîné")
-
-        # Prédictions
-        y_pred = self.model.predict(self.X_test)
-        y_pred_proba = self.model.predict_proba(self.X_test)[:, 1]
-
-        # Calcul des métriques
+        y_pred = self.pipeline.predict(self.X_test)
+        y_probability = self.pipeline.predict_proba(self.X_test)[:, 1]
         metrics = {
-            'accuracy': accuracy_score(self.y_test, y_pred),
-            'roc_auc': roc_auc_score(self.y_test, y_pred_proba),
-            'confusion_matrix': confusion_matrix(self.y_test, y_pred),
-            'classification_report': classification_report(self.y_test, y_pred, output_dict=True)
+            "accuracy": float(accuracy_score(self.y_test, y_pred)),
+            "roc_auc": float(roc_auc_score(self.y_test, y_probability)),
+            "precision": float(precision_score(self.y_test, y_pred, zero_division=0)),
+            "recall": float(recall_score(self.y_test, y_pred, zero_division=0)),
+            "f1_score": float(f1_score(self.y_test, y_pred, zero_division=0)),
+            "confusion_matrix": confusion_matrix(self.y_test, y_pred),
+            "test_predictions": y_pred,
+            "test_probabilities": y_probability,
         }
 
-        # Validation croisée
-        cv_scores = cross_val_score(self.model, self.X_train, self.y_train, cv=5, scoring='roc_auc')
-        metrics['cv_mean'] = cv_scores.mean()
-        metrics['cv_std'] = cv_scores.std()
-
+        cv = StratifiedKFold(
+            n_splits=cv_folds,
+            shuffle=True,
+            random_state=self.random_state,
+        )
+        with warnings.catch_warnings():
+            # Une modalité rare peut être absente du train d'un fold. Elle est
+            # correctement traitée comme inconnue par OneHotEncoder.
+            warnings.filterwarnings(
+                "ignore",
+                message="Found unknown categories.*",
+                category=UserWarning,
+            )
+            cv_results = cross_validate(
+                self.pipeline,
+                self.X_train,
+                self.y_train,
+                cv=cv,
+                scoring={
+                    "accuracy": "accuracy",
+                    "roc_auc": "roc_auc",
+                    "precision": "precision",
+                    "recall": "recall",
+                    "f1": "f1",
+                },
+                return_train_score=False,
+            )
+        for name in ("accuracy", "roc_auc", "precision", "recall", "f1"):
+            values = cv_results[f"test_{name}"]
+            metrics[f"cv_{name}_mean"] = float(values.mean())
+            metrics[f"cv_{name}_std"] = float(values.std())
         return metrics
 
-    def print_evaluation(self, metrics: Dict):
-        """
-        Affiche les résultats d'évaluation du modèle
+    @property
+    def selected_features(self) -> list[str]:
+        """Variables retenues lors de l'ajustement final sur tout le train."""
+        self._check_fitted()
+        return list(self.pipeline.named_steps["selection"].selected_features_)
 
-        Args:
-            metrics: Dictionnaire des métriques
-        """
-        print("\n" + "="*80)
-        print("ÉVALUATION DU MODÈLE DE SCORING")
-        print("="*80 + "\n")
-
-        print(f"📊 Métriques de performance:")
-        print(f"   • Accuracy (Précision globale): {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-        print(f"   • ROC AUC Score: {metrics['roc_auc']:.4f}")
-        print(f"   • Validation croisée (5-fold): {metrics['cv_mean']:.4f} ± {metrics['cv_std']:.4f}")
-
-        print(f"\n📈 Matrice de confusion:")
-        cm = metrics['confusion_matrix']
-        print(f"\n                Prédit: Non    Prédit: Oui")
-        print(f"Réel: Non          {cm[0,0]:<14} {cm[0,1]:<14}")
-        print(f"Réel: Oui          {cm[1,0]:<14} {cm[1,1]:<14}")
-
-        # Calcul des taux
-        tn, fp, fn, tp = cm.ravel()
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-
-        print(f"\n   • Sensibilité (Taux de vrais positifs): {sensitivity:.4f}")
-        print(f"   • Spécificité (Taux de vrais négatifs): {specificity:.4f}")
-
-        print(f"\n📋 Rapport de classification détaillé:")
-        report = metrics['classification_report']
-        print(f"\n   Classe 0 (Non intéressé):")
-        print(f"      - Precision: {report['0']['precision']:.4f}")
-        print(f"      - Recall: {report['0']['recall']:.4f}")
-        print(f"      - F1-Score: {report['0']['f1-score']:.4f}")
-
-        print(f"\n   Classe 1 (Intéressé):")
-        print(f"      - Precision: {report['1']['precision']:.4f}")
-        print(f"      - Recall: {report['1']['recall']:.4f}")
-        print(f"      - F1-Score: {report['1']['f1-score']:.4f}")
-
-        print("\n" + "="*80 + "\n")
+    def get_selection_results(self) -> pd.DataFrame:
+        """Résultats du V de Cramer calculés sur le train final uniquement."""
+        self._check_fitted()
+        return self.pipeline.named_steps["selection"].results_.copy()
 
     def get_feature_importance(self) -> pd.DataFrame:
-        """
-        Extrait l'importance des variables du modèle
+        """Retourne coefficients log-odds et odds ratios par modalité."""
+        self._check_fitted()
+        encoder = self.pipeline.named_steps["encodage"]
+        model = self.pipeline.named_steps["modele"]
+        feature_names = encoder.get_feature_names_out(self.selected_features)
+        coefficients = model.coef_[0]
+        return (
+            pd.DataFrame(
+                {
+                    "Modalite": feature_names,
+                    "Coefficient_log_odds": coefficients,
+                    "Odds_ratio": np.exp(coefficients),
+                    "Coefficient_absolu": np.abs(coefficients),
+                }
+            )
+            .sort_values("Coefficient_absolu", ascending=False)
+            .reset_index(drop=True)
+        )
 
-        Returns:
-            DataFrame avec les coefficients et leur importance
-        """
-        if self.model is None:
-            raise ValueError("Le modèle doit d'abord être entraîné")
+    def predict_score(self, X: pd.DataFrame | None = None) -> pd.Series:
+        """Calcule les probabilités prédites avec le pipeline ajusté sur le train."""
+        self._check_fitted()
+        data = self.df[self.candidate_features] if X is None else X
+        scores = self.pipeline.predict_proba(data)[:, 1]
+        return pd.Series(scores, index=data.index, name="Score_Propension")
 
-        # Extraction des coefficients
-        coefficients = pd.DataFrame({
-            'Feature': self.feature_names,
-            'Coefficient': self.model.coef_[0],
-            'Abs_Coefficient': np.abs(self.model.coef_[0])
-        }).sort_values(by='Abs_Coefficient', ascending=False)
+    def predict(self, X: pd.DataFrame | None = None) -> pd.Series:
+        """Retourne la classe prédite au seuil interne de 0,5."""
+        self._check_fitted()
+        data = self.df[self.candidate_features] if X is None else X
+        predictions = self.pipeline.predict(data)
+        return pd.Series(predictions, index=data.index, name="Prediction")
 
-        return coefficients
-
-    def print_feature_importance(self, top_n: int = 15):
-        """
-        Affiche l'importance des variables
-
-        Args:
-            top_n: Nombre de variables à afficher
-        """
-        importance = self.get_feature_importance()
-
-        print("\n" + "="*80)
-        print("IMPORTANCE DES VARIABLES")
-        print("="*80 + "\n")
-
-        print(f"Top {top_n} des variables les plus influentes:\n")
-        print(importance.head(top_n).to_string(index=False))
-
-        print("\n📊 Interprétation:")
-        print("   • Coefficient > 0: Augmente la probabilité d'adhésion")
-        print("   • Coefficient < 0: Diminue la probabilité d'adhésion")
-        print("   • |Coefficient| élevé: Influence forte")
-
-        print("\n" + "="*80 + "\n")
-
-    def predict_score(self, X: pd.DataFrame = None) -> pd.Series:
-        """
-        Calcule le score de propension (probabilité d'adhésion)
-
-        Args:
-            X: Données à scorer (si None, utilise df original)
-
-        Returns:
-            Série avec les probabilités
-        """
-        if self.model is None:
-            raise ValueError("Le modèle doit d'abord être entraîné")
-
-        if X is None:
-            # Préparation des données originales
-            X = self.df[self.features].copy()
-            X = pd.get_dummies(X, columns=self.features, drop_first=True)
-
-            # Assurer que les colonnes correspondent
-            for col in self.feature_names:
-                if col not in X.columns:
-                    X[col] = 0
-            X = X[self.feature_names]
-
-        # Prédiction des probabilités
-        scores = self.model.predict_proba(X)[:, 1]
-
-        return pd.Series(scores, index=X.index, name='Score_Propension')
-
-    def get_statsmodels_summary(self) -> str:
-        """
-        Retourne le résumé statistique complet du modèle statsmodels
-
-        Returns:
-            Résumé au format texte
-        """
-        if self.statsmodels_result is None:
-            self.fit_statsmodels()
-
-        return str(self.statsmodels_result.summary())
+    def _check_fitted(self) -> None:
+        if self.pipeline is None:
+            raise ValueError("Le pipeline doit d'abord être entraîné.")

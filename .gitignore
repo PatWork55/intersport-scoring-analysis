@@ -34,6 +34,5 @@ Thumbs.db
 *.log
 
 # Note: On garde les fichiers de données pour la démo
-# Si vous voulez les exclure, décommentez:
 # *.xls
 *.doc
